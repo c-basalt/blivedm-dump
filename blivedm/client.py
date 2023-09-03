@@ -5,12 +5,15 @@ import json
 import logging
 import ssl as ssl_
 import struct
-from typing import *
+from typing import Union, Optional, List, NamedTuple
+
+try:
+    from typing import Protocol
+except ImportError:
+    from typing_extensions import Protocol
 
 import aiohttp
 import brotli
-
-from . import handlers
 
 __all__ = (
     'BLiveClient',
@@ -82,6 +85,15 @@ class AuthError(Exception):
     """认证失败"""
 
 
+class HandlerInterface(Protocol):
+    """
+    直播消息处理器接口
+    """
+
+    async def handle(self, client: 'BLiveClient', command: dict):
+        raise NotImplementedError
+
+
 class BLiveClient:
     """
     B站直播弹幕客户端，负责连接房间
@@ -116,7 +128,7 @@ class BLiveClient:
         self._heartbeat_interval = heartbeat_interval
         self._ssl = ssl if ssl else ssl_._create_unverified_context()  # noqa
 
-        self._handlers: List[handlers.HandlerInterface] = []
+        self._handlers: List[HandlerInterface] = []
         """消息处理器，可动态增删"""
 
         # 在调用init_room后初始化的字段
@@ -170,7 +182,7 @@ class BLiveClient:
         """
         return self._room_owner_uid
 
-    def add_handler(self, handler: 'handlers.HandlerInterface'):
+    def add_handler(self, handler: HandlerInterface):
         """
         添加消息处理器
         注意多个处理器是并发处理的，不要依赖处理的顺序
@@ -181,7 +193,7 @@ class BLiveClient:
         if handler not in self._handlers:
             self._handlers.append(handler)
 
-    def remove_handler(self, handler: 'handlers.HandlerInterface'):
+    def remove_handler(self, handler: HandlerInterface):
         """
         移除消息处理器
 
