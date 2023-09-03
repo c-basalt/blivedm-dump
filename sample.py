@@ -2,12 +2,11 @@
 import asyncio
 import http.cookies
 import random
-from typing import *
+from typing import Optional
 
 import aiohttp
 
-from blivedm.client import BLiveClient
-import blivedm.models.web as web_models
+from blivedm.clients import BLiveClient
 
 # 直播间ID的取值看直播间URL
 TEST_ROOM_IDS = [
@@ -18,6 +17,12 @@ TEST_ROOM_IDS = [
     23105590,
 ]
 
+try:
+    with open('room_list.txt', 'rt') as f:
+        TEST_ROOM_IDS = [int(i) for i in f.readlines()]
+except Exception:
+    pass
+
 # 这里填一个已登录账号的cookie。不填cookie也可以连接，但是收到弹幕的用户名会打码，UID会变成0
 SESSDATA = ''
 
@@ -27,15 +32,17 @@ session: Optional[aiohttp.ClientSession] = None
 class BaseHandler():
     _CMD_CALLBACK_DICT = {}
 
-    async def handle(self, client, command: dict):
+    def handle(self, client, command: dict):
         cmd = command.get('cmd', '').split(':')[0]
 
-        if cmd not in self._CMD_CALLBACK_DICT:
-            print(cmd, command)
+        callback = self._CMD_CALLBACK_DICT.get(cmd)
+        if callback is not None:
+            callback(self, client, command)
         else:
-            callback = self._CMD_CALLBACK_DICT[cmd]
-            if callback is not None:
-                await callback(self, client, command)
+            print(cmd, command)
+
+    def on_stopped_by_exception(self, client, exception: Exception):
+        client.start()
 
 
 async def main():

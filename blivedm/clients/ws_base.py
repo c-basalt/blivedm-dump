@@ -5,7 +5,7 @@ import json
 import logging
 import struct
 import zlib
-from typing import Union, Optional, List, NamedTuple
+from typing import Optional, NamedTuple
 
 try:
     from typing import Protocol
@@ -86,8 +86,13 @@ class HandlerInterface(Protocol):
     直播消息处理器接口
     """
 
-    async def handle(self, client: 'BLiveClient', command: dict):
+    def handle(self, client: 'WebSocketClientBase', command: dict):
         raise NotImplementedError
+
+    def on_stopped_by_exception(self, client: 'WebSocketClientBase', exception: Exception):
+        """
+        当客户端被异常停止时调用。可以在这里close或者重新start
+        """
 
 
 class WebSocketClientBase:

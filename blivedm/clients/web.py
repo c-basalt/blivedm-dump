@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
-from typing import *
+from typing import Optional, List
 
 import aiohttp
-import yarl
 
 from . import ws_base
 from .. import utils
@@ -81,6 +80,15 @@ class BLiveClient(ws_base.WebSocketClientBase):
         """
         return self._uid
 
+    def _get_cookie(self, key, default=None):
+        for cookie in self._session.cookie_jar:
+            if cookie.key == key:
+                return cookie.value
+        return default
+
+    def _get_buvid(self):
+        return self._get_cookie('buvid3', '')
+
     async def init_room(self):
         """
         初始化连接房间需要的字段
@@ -111,9 +119,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
         return res
 
     async def _init_uid(self):
-        cookies = self._session.cookie_jar.filter_cookies(yarl.URL(UID_INIT_URL))
-        sessdata_cookie = cookies.get('SESSDATA', None)
-        if sessdata_cookie is None or sessdata_cookie.value == '':
+        if not self._get_cookie('SESSDATA'):
             # cookie都没有，不用请求了
             self._uid = 0
             return True
@@ -147,13 +153,6 @@ class BLiveClient(ws_base.WebSocketClientBase):
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
             logger.exception('room=%d _init_uid() failed:', self._tmp_room_id)
             return False
-
-    def _get_buvid(self):
-        cookies = self._session.cookie_jar.filter_cookies(yarl.URL(BUVID_INIT_URL))
-        buvid_cookie = cookies.get('buvid3', None)
-        if buvid_cookie is None:
-            return ''
-        return buvid_cookie.value
 
     async def _init_buvid(self):
         try:
