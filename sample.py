@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import http.cookies
 import random
+from typing import *
+
+import aiohttp
 
 from blivedm.client import BLiveClient
+import blivedm.models.web as web_models
 
 # 直播间ID的取值看直播间URL
 TEST_ROOM_IDS = [
@@ -12,6 +17,11 @@ TEST_ROOM_IDS = [
     21449083,
     23105590,
 ]
+
+# 这里填一个已登录账号的cookie。不填cookie也可以连接，但是收到弹幕的用户名会打码，UID会变成0
+SESSDATA = ''
+
+session: Optional[aiohttp.ClientSession] = None
 
 
 class BaseHandler():
@@ -29,8 +39,22 @@ class BaseHandler():
 
 
 async def main():
-    await run_single_client()
-    await run_multi_clients()
+    init_session()
+    try:
+        await run_single_client()
+        await run_multi_clients()
+    finally:
+        await session.close()
+
+
+def init_session():
+    cookies = http.cookies.SimpleCookie()
+    cookies['SESSDATA'] = SESSDATA
+    cookies['SESSDATA']['domain'] = 'bilibili.com'
+
+    global session
+    session = aiohttp.ClientSession()
+    session.cookie_jar.update_cookies(cookies)
 
 
 async def run_single_client():
@@ -38,10 +62,9 @@ async def run_single_client():
     演示监听一个直播间
     """
     room_id = random.choice(TEST_ROOM_IDS)
-    # 如果SSL验证失败就把ssl设为False，B站真的有过忘续证书的情况
-    client = BLiveClient(room_id, ssl=True)
+    client = BLiveClient(room_id, session=session)
     handler = BaseHandler()
-    client.add_handler(handler)
+    client.set_handler(handler)
 
     client.start()
     try:
@@ -58,10 +81,10 @@ async def run_multi_clients():
     """
     演示同时监听多个直播间
     """
-    clients = [BLiveClient(room_id) for room_id in TEST_ROOM_IDS]
+    clients = [BLiveClient(room_id, session=session) for room_id in TEST_ROOM_IDS]
     handler = BaseHandler()
     for client in clients:
-        client.add_handler(handler)
+        client.set_handler(handler)
         client.start()
 
     try:
