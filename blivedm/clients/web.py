@@ -15,7 +15,7 @@ __all__ = (
 logger = logging.getLogger('blivedm')
 
 UID_INIT_URL = 'https://api.bilibili.com/x/web-interface/nav'
-BUVID_INIT_URL = 'https://data.bilibili.com/v/'
+BUVID_INIT_URL = 'https://t.bilibili.com/'
 ROOM_INIT_URL = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom'
 DANMAKU_SERVER_CONF_URL = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo'
 DEFAULT_DANMAKU_SERVER_LIST = [
@@ -37,15 +37,15 @@ class BLiveClient(ws_base.WebSocketClientBase):
         self,
         room_id: int,
         *,
-        uid: Optional[int] = None,
         session: Optional[aiohttp.ClientSession] = None,
+        cookies: dict = {},
         heartbeat_interval=30,
     ):
-        super().__init__(session, heartbeat_interval)
+        super().__init__(session, cookies=cookies, heartbeat_interval=heartbeat_interval)
 
         self._tmp_room_id = room_id
         """用来init_room的临时房间ID，可以用短ID"""
-        self._uid = uid
+        self._uid: Optional[int] = None
 
         # 在调用init_room后初始化的字段
         self._room_owner_uid: Optional[int] = None
@@ -80,29 +80,12 @@ class BLiveClient(ws_base.WebSocketClientBase):
         """
         return self._uid
 
-    def _get_cookie(self, key, default=None):
-        for cookie in self._session.cookie_jar:
-            if cookie.key == key:
-                return cookie.value
-        return default
-
-    def _get_buvid(self):
-        return self._get_cookie('buvid3', '')
-
     async def init_room(self):
         """
         初始化连接房间需要的字段
 
         :return: True代表没有降级，如果需要降级后还可用，重载这个函数返回True
         """
-        if self._uid is None:
-            if not await self._init_uid():
-                logger.warning('room=%d _init_uid() failed', self._tmp_room_id)
-                self._uid = 0
-
-        if self._get_buvid() == '':
-            if not await self._init_buvid():
-                logger.warning('room=%d _init_buvid() failed', self._tmp_room_id)
 
         res = True
         if not await self._init_room_id_and_owner():
@@ -117,6 +100,23 @@ class BLiveClient(ws_base.WebSocketClientBase):
             self._host_server_list = DEFAULT_DANMAKU_SERVER_LIST
             self._host_server_token = None
         return res
+
+    def reset_session(self):
+        self._uid = None
+        self._host_server_token = None
+        self._host_server_list = None
+
+    async def init_session(self):
+        if self._uid is None:
+            if not await self._init_uid():
+                logger.warning('room=%d _init_uid() failed', self._tmp_room_id)
+
+        if self._get_buvid() == '':
+            if not await self._init_buvid():
+                logger.warning('room=%d _init_buvid() failed', self._tmp_room_id)
+
+        if not self._host_server_token:
+            await self._init_host_server()
 
     async def _init_uid(self):
         if not self._get_cookie('SESSDATA'):
@@ -149,6 +149,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
                     self._uid = 0
                 else:
                     self._uid = data['mid']
+                    logger.info(f"room={self._tmp_room_id} Continue as {data.get('uname')}({self._uid})")
                 return True
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
             logger.exception('room=%d _init_uid() failed:', self._tmp_room_id)
@@ -165,6 +166,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
                                    self._tmp_room_id, res.status, res.reason)
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
             logger.exception('room=%d _init_buvid() exception:', self._tmp_room_id)
+        logger.info('room=%d _get_buvid() -> "%s"', self._tmp_room_id, self._get_buvid())
         return self._get_buvid() != ''
 
     async def _init_room_id_and_owner(self):
@@ -218,6 +220,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
                     return False
                 if not self._parse_danmaku_server_conf(data['data']):
                     return False
+                logger.info('room=%d Loaded danmaku server info', self._room_id)
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
             logger.exception('room=%d _init_host_server() failed:', self._room_id)
             return False
@@ -245,6 +248,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
         返回WebSocket连接的URL，可以在这里做故障转移和负载均衡
         """
         host_server = self._host_server_list[retry_count % len(self._host_server_list)]
+        logger.info(f"room={self._room_id} selecting server {host_server['host']}")
         return f"wss://{host_server['host']}:{host_server['wss_port']}/sub"
 
     async def _send_auth(self):
@@ -252,13 +256,14 @@ class BLiveClient(ws_base.WebSocketClientBase):
         发送认证包
         """
         auth_params = {
-            'uid': self._uid,
+            'uid': self._uid or 0,
             'roomid': self._room_id,
             'protover': 3,
+            'buvid': self._get_buvid(),
             'platform': 'web',
             'type': 2,
-            'buvid': self._get_buvid(),
         }
         if self._host_server_token is not None:
             auth_params['key'] = self._host_server_token
+        logger.info(f"room={self._room_id} sending auth {auth_params} with cookies {list(self._session.cookie_jar)}")
         await self._websocket.send_bytes(self._make_packet(auth_params, ws_base.Operation.AUTH))

@@ -19,10 +19,6 @@ from .. import utils
 
 logger = logging.getLogger('blivedm')
 
-USER_AGENT = (
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36'
-)
-
 HEADER_STRUCT = struct.Struct('>I2H2I')
 
 
@@ -106,10 +102,14 @@ class WebSocketClientBase:
     def __init__(
         self,
         session: Optional[aiohttp.ClientSession] = None,
+        cookies: dict = {},
         heartbeat_interval: float = 30,
     ):
+        self._cookies = cookies
+        self.censored = False
+
         if session is None:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+            self._session = utils.session_from_cookies(self.cookies)
             self._own_session = True
         else:
             self._session = session
@@ -133,6 +133,16 @@ class WebSocketClientBase:
         """发心跳包定时器的handle"""
 
     @property
+    def cookies(self) -> dict:
+        return self._cookies
+
+    @cookies.setter
+    def cookies(self, new_cookies):
+        self._cookies = new_cookies
+        if self.censored and self._own_session:
+            asyncio.ensure_future(self.remake_cookie_session())
+
+    @property
     def is_running(self) -> bool:
         """
         本客户端正在运行，注意调用stop后还没完全停止也算正在运行
@@ -145,6 +155,27 @@ class WebSocketClientBase:
         房间ID，调用init_room后初始化
         """
         return self._room_id
+
+    # helper methods
+
+    async def remake_cookie_session(self):
+        logger.info('Remaking session from cookies')
+        old_session = self._session
+        self.reset_session()
+        self._session = utils.session_from_cookies(self.cookies)
+        self.censored = False
+        await old_session.close()
+
+    def _get_cookie(self, key, default=None):
+        for cookie in self._session.cookie_jar:
+            if cookie.key == key:
+                return cookie.value
+        return default
+
+    def _get_buvid(self):
+        return self._get_cookie('buvid3', '')
+
+    # interfaces
 
     def set_handler(self, handler: Optional[HandlerInterface]):
         """
@@ -215,6 +246,12 @@ class WebSocketClientBase:
         """
         raise NotImplementedError
 
+    async def init_session(self):
+        pass
+
+    def reset_session(self):
+        logger.warning("reset_session() is not implemented")
+
     @staticmethod
     def _make_packet(data: dict, operation: int) -> bytes:
         """
@@ -263,6 +300,10 @@ class WebSocketClientBase:
         retry_count = 0
         while True:
             try:
+                if self._own_session:
+                    if self.cookies.get('SESSDATA', None) != self._get_cookie('SESSDATA'):
+                        await self.remake_cookie_session()
+                await self.init_session()
                 # 连接
                 async with self._session.ws_connect(
                     self._get_ws_url(retry_count),
@@ -273,11 +314,9 @@ class WebSocketClientBase:
                     await self._on_ws_connect()
 
                     # 处理消息
-                    message: aiohttp.WSMessage
+                    # message: aiohttp.WSMessage
                     async for message in websocket:
                         await self._on_ws_message(message)
-                        # 至少成功处理1条消息
-                        retry_count = 0
 
             except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
                 # 掉线重连
@@ -294,12 +333,15 @@ class WebSocketClientBase:
             # 准备重连
             retry_count += 1
             logger.warning('room=%d is reconnecting, retry_count=%d', self.room_id, retry_count)
-            await asyncio.sleep(1)
+            await self._on_network_coroutine_retry()
 
     async def _on_network_coroutine_start(self):
         """
         在_network_coroutine开头运行，可以用来初始化房间
         """
+
+    async def _on_network_coroutine_retry(self):
+        await asyncio.sleep(1)
 
     def _get_ws_url(self, retry_count) -> str:
         """
@@ -478,6 +520,10 @@ class WebSocketClientBase:
             # 1. 为了保持处理消息的顺序，这里不使用call_soon、create_task等方法延迟处理
             # 2. 如果支持handle使用async函数，用户可能会在里面处理耗时很长的异步操作，导致网络协程阻塞
             # 这里做成同步的，强制用户使用create_task或消息队列处理异步操作，这样就不会阻塞网络协程
-            self._handler.handle(self, command)
+            if command.get('cmd', '').startswith('LOG_IN_NOTICE'):
+                self.censored = True
+                logger.info('room=%d is censored by server', self.room_id)
+            if self._handler:
+                self._handler.handle(self, command)
         except Exception as e:
             logger.exception('room=%d _handle_command() failed, command=%s', self.room_id, command, exc_info=e)

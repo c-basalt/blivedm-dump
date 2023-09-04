@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
-import http.cookies
-import random
+import logging
+import json
 from typing import Optional
 
 import aiohttp
@@ -28,6 +28,14 @@ SESSDATA = ''
 
 session: Optional[aiohttp.ClientSession] = None
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
+
+
+def load_cookies(fn):
+    with open(fn, 'rt', encoding='utf-8') as f:
+        return {cookie['name']: cookie['value'] for cookie in json.load(f)['cookie_info']['cookies']}
+
 
 class BaseHandler():
     _CMD_CALLBACK_DICT = {}
@@ -39,59 +47,34 @@ class BaseHandler():
         if callback is not None:
             callback(self, client, command)
         else:
-            print(cmd, command)
+            if cmd == 'DANMU_MSG':
+                print(client.room_id, cmd, str(command['info'][1:])[:150])
+            elif cmd in ['LOG_IN_NOTICE']:
+                print(client.room_id, cmd, str(command)[:150])
 
     def on_stopped_by_exception(self, client, exception: Exception):
         client.start()
 
 
-async def main():
-    init_session()
-    try:
-        await run_single_client()
-        await run_multi_clients()
-    finally:
-        await session.close()
+async def main(cookie_fn):
+    await run_multi_clients(cookie_fn)
 
 
-def init_session():
-    cookies = http.cookies.SimpleCookie()
-    cookies['SESSDATA'] = SESSDATA
-    cookies['SESSDATA']['domain'] = 'bilibili.com'
-
-    global session
-    session = aiohttp.ClientSession()
-    session.cookie_jar.update_cookies(cookies)
+async def load_cookies_delay(client, cookie_fn):
+    await asyncio.sleep(60)
+    client.cookies = load_cookies(cookie_fn)
 
 
-async def run_single_client():
-    """
-    演示监听一个直播间
-    """
-    room_id = random.choice(TEST_ROOM_IDS)
-    client = BLiveClient(room_id, session=session)
-    handler = BaseHandler()
-    client.set_handler(handler)
-
-    client.start()
-    try:
-        # 演示5秒后停止
-        await asyncio.sleep(5)
-        client.stop()
-
-        await client.join()
-    finally:
-        await client.stop_and_close()
-
-
-async def run_multi_clients():
+async def run_multi_clients(cookie_fn):
     """
     演示同时监听多个直播间
     """
-    clients = [BLiveClient(room_id, session=session) for room_id in TEST_ROOM_IDS]
+    clients = [BLiveClient(room_id) for room_id in TEST_ROOM_IDS]
     handler = BaseHandler()
     for client in clients:
         client.set_handler(handler)
+        # client.cookies = load_cookies(cookie_fn)
+        # asyncio.ensure_future(load_cookies_delay(client, cookie_fn))
         client.start()
 
     try:
@@ -105,4 +88,5 @@ async def run_multi_clients():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    import sys
+    asyncio.run(main(sys.argv[1]))

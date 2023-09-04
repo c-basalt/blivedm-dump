@@ -1,5 +1,6 @@
 # config files
 room_list.txt
+*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
