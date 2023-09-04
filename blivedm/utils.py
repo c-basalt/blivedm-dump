@@ -17,9 +17,10 @@ def session_from_cookies(cookies: dict, timeout=10, domain='bilibili.com'):
     return session
 
 
-async def validate_cookies(cookies):
+async def validate_cookies(cookies) -> bool:
     async with session_from_cookies(cookies) as session:
         async with session.get('https://api.bilibili.com/x/web-interface/nav') as r:
             if r.status == 200:
                 if '{"code":0,' in (await r.text()):
                     return True
+    return False
